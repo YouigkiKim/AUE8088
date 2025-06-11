@@ -6,7 +6,7 @@ import torch.nn as nn
 
 from utils.metrics import bbox_iou
 from utils.torch_utils import de_parallel
-
+from utils.modified_loss import build_targets_simota
 
 def smooth_BCE(eps=0.1):
     """Returns label smoothing BCE targets for reducing overfitting; pos: `1.0 - 0.5*eps`, neg: `0.5*eps`. For details see https://github.com/ultralytics/yolov3/issues/238#issuecomment-598028441"""
@@ -130,6 +130,8 @@ class ComputeLoss:
         self.nl = m.nl  # number of layers
         self.anchors = m.anchors
         self.device = device
+        ## modified_loss
+        # self.build_targets = build_targets_simota.__get__(self)
 
     def __call__(self, p, targets):  # predictions, targets
         """Performs forward pass, calculating class, box, and object loss for given predictions and targets."""
@@ -167,15 +169,23 @@ class ComputeLoss:
                 # do not calculate objectness loss
                 ign_idx = (tcls[i] == -1) & (iou > self.hyp["iou_t"])
                 keep = ~ign_idx
-                b, a, gj, gi, iou = b[keep], a[keep], gj[keep], gi[keep], iou[keep]
+                
+                # Check if any predictions should be kept
+                if keep.sum() > 0:
+                    b, a, gj, gi, iou = b[keep], a[keep], gj[keep], gi[keep], iou[keep]
+                    tobj[b, a, gj, gi] = iou  # iou ratio
 
-                tobj[b, a, gj, gi] = iou  # iou ratio
-
-                # Classification
-                if self.nc > 1:  # cls loss (only if multiple classes)
-                    t = torch.full_like(pcls, self.cn, device=self.device)  # targets
-                    t[range(n), tcls[i]] = self.cp
-                    lcls += self.BCEcls(pcls, t)  # BCE
+                    # Classification
+                    if self.nc > 1:  # cls loss (only if multiple classes)
+                        # Filter pcls and tcls as well
+                        pcls_filtered = pcls[keep]
+                        tcls_filtered = tcls[i][keep]
+                        t = torch.full_like(pcls_filtered, self.cn, device=self.device)  # targets
+                        t[range(len(tcls_filtered)), tcls_filtered] = self.cp
+                        lcls += self.BCEcls(pcls_filtered, t)  # BCE
+                else:
+                    # All predictions are ignored, skip setting objectness targets
+                    pass
 
                 # Append targets to text file
                 # with open('targets.txt', 'a') as file:

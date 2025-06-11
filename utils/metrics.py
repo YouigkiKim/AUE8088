@@ -383,3 +383,14 @@ def plot_mc_curve(px, py, save_dir=Path("mc_curve.png"), names=(), xlabel="Confi
     ax.set_title(f"{ylabel}-Confidence Curve")
     fig.savefig(save_dir, dpi=250)
     plt.close(fig)
+
+# modified_loss
+def pairwise_bbox_iou(gt_xywh, anchor_wh, eps=1e-7, *args, **kwargs):
+    """
+    IoU between each gt box and anchor (width-height only, no position).
+    gt_xywh : (M, 4)  x, y, w, h    ->  w,h 만 사용
+    anchor_wh : (N, 2)  w, h
+    return : (M, N)  IoU matrix
+    """
+    # gt_xywh[:, 2:4] -> (M,2)  == widths & heights
+    return wh_iou(gt_xywh[:, 2:4], anchor_wh, eps=eps)
