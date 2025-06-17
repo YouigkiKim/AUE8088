@@ -136,7 +136,7 @@
   ```
 
 - Test 
-  '''bash
+  ```bash
   $ python val_rgbt.py \
   --save-dir val_rgbt/autoanchor_mosaic_40_best \
   --weights runs/train/yolov5n-rgbt_aug_mosaic_mixup_mosaic_geom_continue/weights/best.pt \
@@ -149,7 +149,7 @@
   --data kaist-rgbt_test.yaml \
   --batch-size 32 \
   --save-json
-'''
+
 
 
 ### Evaluation (eval.ai server)
