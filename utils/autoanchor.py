@@ -62,7 +62,7 @@ def check_anchors(dataset, model, thr=4.0, imgsz=640):
         LOGGER.info(s)
 
 
-def kmean_anchors(dataset="./data/coco128.yaml", n=9, img_size=640, thr=4.0, gen=1000, verbose=True):
+def kmean_anchors(dataset="./data/coco128.yaml", n=9, img_size=640, thr=4.0, gen=1000, verbose=True, target_class=None):
     """
     Creates kmeans-evolved anchors from training dataset.
 
@@ -73,6 +73,7 @@ def kmean_anchors(dataset="./data/coco128.yaml", n=9, img_size=640, thr=4.0, gen
         thr: anchor-label wh ratio threshold hyperparameter hyp['anchor_t'] used for training, default=4.0
         gen: generations to evolve anchors using genetic algorithm
         verbose: print all results
+        target_class: specific class index to filter labels for (e.g., 0 for person in COCO), None for all classes
 
     Return:
         k: kmeans evolved anchors
@@ -119,7 +120,47 @@ def kmean_anchors(dataset="./data/coco128.yaml", n=9, img_size=640, thr=4.0, gen
 
     # Get label wh
     shapes = img_size * dataset.shapes / dataset.shapes.max(1, keepdims=True)
-    wh0 = np.concatenate([l[:, 3:5] * s for s, l in zip(shapes, dataset.labels)])  # wh
+    
+    # Filter labels by target class if specified
+    if target_class is not None:
+        LOGGER.info(f"{PREFIX}Filtering labels for class {target_class} only...")
+        filtered_wh = []
+        total_labels = 0
+        class_labels = 0
+        
+        for s, l in zip(shapes, dataset.labels):
+            if l.size > 0:
+                total_labels += len(l)
+                # Filter by class (class is at index 0, ignore negative classes like -1)
+                class_mask = (l[:, 0] == target_class) & (l[:, 0] >= 0)
+                class_filtered = l[class_mask]
+                class_labels += len(class_filtered)
+                
+                if len(class_filtered) > 0:
+                    # Extract width, height (indices 3:5) and scale
+                    wh_scaled = class_filtered[:, 3:5] * s
+                    filtered_wh.append(wh_scaled)
+        
+        if len(filtered_wh) > 0:
+            wh0 = np.concatenate(filtered_wh)
+            LOGGER.info(f"{PREFIX}Found {class_labels} labels of class {target_class} out of {total_labels} total labels")
+        else:
+            LOGGER.warning(f"{PREFIX}No labels found for class {target_class}! Using all classes instead.")
+            # Fallback: extract wh from all labels, handling both 5 and 6 column formats
+            all_wh = []
+            for s, l in zip(shapes, dataset.labels):
+                if l.size > 0:
+                    wh_data = l[:, 3:5]  # width, height (works for both YOLO and KAIST formats)
+                    all_wh.append(wh_data * s)
+            wh0 = np.concatenate(all_wh) if all_wh else np.array([]).reshape(0, 2)
+    else:
+        # Extract wh from all labels, handling both formats
+        all_wh = []
+        for s, l in zip(shapes, dataset.labels):
+            if l.size > 0:
+                wh_data = l[:, 3:5]  # width, height (works for both YOLO and KAIST formats)
+                all_wh.append(wh_data * s)
+        wh0 = np.concatenate(all_wh) if all_wh else np.array([]).reshape(0, 2)
 
     # Filter
     i = (wh0 < 3.0).any(1).sum()

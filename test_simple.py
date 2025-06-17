@@ -71,8 +71,6 @@ from utils.torch_utils import (
     smart_optimizer,
 )
 
-from utils.autoanchor import kmean_anchors, check_anchor_order
-
 
 # LOGGERS = ("csv", "tb", "wandb", "clearml", "comet")  # *.csv, TensorBoard, Weights & Biases, ClearML
 LOGGERS = ("wandb",)  # *.csv, TensorBoard, Weights & Biases, ClearML
@@ -256,221 +254,168 @@ def train(hyp, opt, device, callbacks):
         f"Logging results to {colorstr('bold', save_dir)}\n"
         f'Starting training for {epochs} epochs...'
     )
+    # for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
+    #     callbacks.run("on_train_epoch_start")
+    #     model.train()
 
-    # ──────────────── Anchor tuning begin ────────────────
-    anchor_tune = True
-    if anchor_tune:
-        import matplotlib, matplotlib.pyplot as plt, matplotlib.patches as patchesw
-        matplotlib.use("Agg")                     # WSL·CLI 환경용
+    #     mloss = torch.zeros(3, device=device)  # mean losses
+    #     pbar = enumerate(train_loader)
+    #     LOGGER.info(("\n" + "%11s" * 7) % ("Epoch", "GPU_mem", "box_loss", "obj_loss", "cls_loss", "Instances", "Size"))
 
-        LOGGER.info(colorstr("AutoAnchor: ") + "running k-means+GA on training set for person class only…")
-        
-        # Person class index - typically 0 in COCO format
-        person_class_id = 0  # Adjust this based on your dataset
-        anchors = kmean_anchors(dataset, n=9, img_size=imgsz, thr=4.0, gen=1000, target_class=person_class_id)
-        detect  = model.model[-1]
-        stride  = detect.stride.view(-1,1,1)
-        detect.anchors[:] = torch.tensor(anchors, device=detect.anchors.device).view_as(detect.anchors)
-        detect.anchors /= stride
-        check_anchor_order(detect)
+    #     pbar = tqdm(pbar, total=nb, bar_format=TQDM_BAR_FORMAT)  # progress bar
+    #     optimizer.zero_grad()
 
-        # 균등성 통계 (IoU-based build_targets)
-        compute_loss_tmp = ComputeLoss(model)
+    #     for i, (imgs, targets, paths, _, _) in pbar:  # batch -------------------------------------------------------------
+    #         callbacks.run("on_train_batch_start")
+    #         ni = i + nb * epoch  # number integrated batches (since train start)
 
-        pos_layer  = [0]*detect.nl
-        pos_anchor = [0]*detect.na
-        dummy_pred = []
-        for s in detect.stride:                 # 레이어별 빈 prediction tensor
-            g = imgsz // int(s)
-            dummy_pred.append(torch.empty(0, detect.na, g, g, 5+model.nc, device=device))
+    #         if isinstance(imgs, list):
+    #             imgs = [img.to(device, non_blocking=True).float() / 255 for img in imgs]    # For RGB-T input
+    #         else:
+    #             imgs = imgs.to(device, non_blocking=True).float() / 255  # uint8 to float32, 0-255 to 0.0-1.0
 
-        for lbl in dataset.labels:              # 빠른 스캔
-            _, _, idx, _ = compute_loss_tmp.build_targets(dummy_pred,
-                                                        torch.tensor(lbl).to(device))
-            for l,(b,a,_,_) in enumerate(idx):
-                pos_layer[l] += len(b)
-                for ai in a.cpu().numpy():
-                    pos_anchor[int(ai)] += 1
+    #         # Warmup
+    #         if ni <= nw:
+    #             xi = [0, nw]  # x interp
+    #             accumulate = max(1, np.interp(ni, xi, [1, nbs / batch_size]).round())
+    #             for j, x in enumerate(optimizer.param_groups):
+    #                 # bias lr falls from 0.1 to lr0, all other lrs rise from 0.0 to lr0
+    #                 x["lr"] = np.interp(ni, xi, [hyp["warmup_bias_lr"] if j == 0 else 0.0, x["initial_lr"] * lf(epoch)])
+    #                 if "momentum" in x:
+    #                     x["momentum"] = np.interp(ni, xi, [hyp["warmup_momentum"], hyp["momentum"]])
 
-        LOGGER.info(f"AutoAnchor: layer-CV={np.std(pos_layer)/np.mean(pos_layer):.3f}, "
-                    f"anchor-CV={np.std(pos_anchor)/np.mean(pos_anchor):.3f}")
+    #         # Forward
+    #         with torch.amp.autocast(device_type=device.type):
+    #             pred = model(imgs)  # forward
+    #             loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
+    #             if opt.quad:
+    #                 loss *= 4.0
 
-        # 시각화 (anchors_new.png)
-        anchor_px  = detect.anchors.cpu().numpy() * stride.cpu().numpy()   # (nl,na,2)
-        strides_px = stride.cpu().numpy().squeeze(-1)
+    #         # Backward
+    #         scaler.scale(loss).backward()
 
-        fig, ax = plt.subplots(figsize=(6, 6))
-        markers = ['o', 's', '^', 'D', 'v', '*']           # 레이어별 마커
+    #         # Optimize - https://pytorch.org/docs/master/notes/amp_examples.html
+    #         if ni - last_opt_step >= accumulate:
+    #             scaler.unscale_(optimizer)  # unscale gradients
+    #             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)  # clip gradients
+    #             scaler.step(optimizer)  # optimizer.step
+    #             scaler.update()
+    #             optimizer.zero_grad()
+    #             if ema:
+    #                 ema.update(model)
+    #             last_opt_step = ni
 
-        for i, layer in enumerate(anchor_px):
-            w, h = layer[:, 0], layer[:, 1]
-            ax.scatter(w, h,
-                    s=120, alpha=0.8,
-                    marker=markers[i % len(markers)],
-                    label=f'P{i+3}  stride={int(strides_px[i])}')
-            # 각 점 위에 텍스트
-            for (x, y) in zip(w, h):
-                ax.text(x, y, f'{int(x)}×{int(y)}', fontsize=8,
-                        ha='center', va='bottom', color=f'C{i}')
+    #         # Log
+    #         mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
+    #         mem = f"{torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0:.3g}G"  # (GB)
+    #         pbar.set_description(
+    #             ("%11s" * 2 + "%11.4g" * 5)
+    #             % (f"{epoch}/{epochs - 1}", mem, *mloss, targets.shape[0], (imgs[0] if isinstance(imgs, list) else imgs).shape[-1])
+    #         )
+    #         callbacks.run("on_train_batch_end", model, ni, imgs, targets, paths, list(mloss))
+    #         if callbacks.stop_training:
+    #             return
+    #         # end batch ------------------------------------------------------------------------------------------------
 
-        ax.set_title('New Anchors (pixel scale)')
-        ax.set_xlabel('width (px)'); ax.set_ylabel('height (px)')
-        ax.set_xlim(0, anchor_px.max()*1.1); ax.set_ylim(0, anchor_px.max()*1.1)
-        ax.set_aspect('equal')  # x와 y축 스케일 동일하게 설정
-        ax.grid(True); ax.legend(loc='upper left')
-        plt.tight_layout(); plt.savefig(os.path.join(save_dir, 'anchors_new.png'), dpi=200)
-        LOGGER.info(colorstr('AutoAnchor: ') + 'scatter saved to anchors_new.png')
-        # ──────────────── Anchor tuning end ────────────────
+    #     # Scheduler
+    #     lr = [x["lr"] for x in optimizer.param_groups]  # for loggers
+    #     scheduler.step()
 
+    #     # mAP
+    #     callbacks.run("on_train_epoch_end", epoch=epoch)
+    #     ema.update_attr(model, include=["yaml", "nc", "hyp", "names", "stride", "class_weights"])
+    #     final_epoch = (epoch + 1 == epochs) or stopper.possible_stop
+    #     if not noval or final_epoch:  # Calculate mAP
+    #         results, maps, _ = validate.run(
+    #             data_dict,
+    #             batch_size=batch_size * 2,
+    #             imgsz=imgsz,
+    #             half=amp,
+    #             model=ema.ema,
+    #             single_cls=single_cls,
+    #             save_json=True,
+    #             dataloader=val_loader,
+    #             save_dir=save_dir,
+    #             plots=True,
+    #             callbacks=callbacks,
+    #             compute_loss=compute_loss,
+    #             epoch=epoch,
+    #         )
 
-    for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
-        callbacks.run("on_train_epoch_start")
-        model.train()
+    #     # Update best mAP
+    #     fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
+    #     stop = stopper(epoch=epoch, fitness=fi)  # early stop check
+    #     if fi > best_fitness:
+    #         best_fitness = fi
+    #     log_vals = list(mloss) + list(results) + lr
+    #     callbacks.run("on_fit_epoch_end", log_vals, epoch, best_fitness, fi)
 
-        mloss = torch.zeros(3, device=device)  # mean losses
-        pbar = enumerate(train_loader)
-        LOGGER.info(("\n" + "%11s" * 7) % ("Epoch", "GPU_mem", "box_loss", "obj_loss", "cls_loss", "Instances", "Size"))
+    #     # Save model
+    #     if (not nosave) or (final_epoch):  # if save
+    #         ckpt = {
+    #             "epoch": epoch,
+    #             "best_fitness": best_fitness,
+    #             "model": deepcopy(de_parallel(model)).half(),
+    #             "ema": deepcopy(ema.ema).half(),
+    #             "updates": ema.updates,
+    #             "optimizer": optimizer.state_dict(),
+    #             "opt": vars(opt),
+    #             "date": datetime.now().isoformat(),
+    #         }
 
-        pbar = tqdm(pbar, total=nb, bar_format=TQDM_BAR_FORMAT)  # progress bar
-        optimizer.zero_grad()
+    #         # Save last, best and delete
+    #         torch.save(ckpt, last)
+    #         if best_fitness == fi:
+    #             torch.save(ckpt, best)
+    #         if opt.save_period > 0 and epoch % opt.save_period == 0:
+    #             torch.save(ckpt, w / f"epoch{epoch}.pt")
+    #         del ckpt
+    #         callbacks.run("on_model_save", last, epoch, final_epoch, best_fitness, fi)
 
-        for i, (imgs, targets, paths, _, _) in pbar:  # batch -------------------------------------------------------------
-            callbacks.run("on_train_batch_start")
-            ni = i + nb * epoch  # number integrated batches (since train start)
+    #     # EarlyStopping
+    #     if stop:
+    #         break
 
-            if isinstance(imgs, list):
-                imgs = [img.to(device, non_blocking=True).float() / 255 for img in imgs]    # For RGB-T input
-            else:
-                imgs = imgs.to(device, non_blocking=True).float() / 255  # uint8 to float32, 0-255 to 0.0-1.0
+    #     # end epoch ----------------------------------------------------------------------------------------------------
 
-            # Warmup
-            if ni <= nw:
-                xi = [0, nw]  # x interp
-                accumulate = max(1, np.interp(ni, xi, [1, nbs / batch_size]).round())
-                for j, x in enumerate(optimizer.param_groups):
-                    # bias lr falls from 0.1 to lr0, all other lrs rise from 0.0 to lr0
-                    x["lr"] = np.interp(ni, xi, [hyp["warmup_bias_lr"] if j == 0 else 0.0, x["initial_lr"] * lf(epoch)])
-                    if "momentum" in x:
-                        x["momentum"] = np.interp(ni, xi, [hyp["warmup_momentum"], hyp["momentum"]])
-
-            # Forward
-            with torch.amp.autocast(device_type=device.type):
-                pred = model(imgs)  # forward
-                loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
-                if opt.quad:
-                    loss *= 4.0
-
-            # Backward
-            scaler.scale(loss).backward()
-
-            # Optimize - https://pytorch.org/docs/master/notes/amp_examples.html
-            if ni - last_opt_step >= accumulate:
-                scaler.unscale_(optimizer)  # unscale gradients
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)  # clip gradients
-                scaler.step(optimizer)  # optimizer.step
-                scaler.update()
-                optimizer.zero_grad()
-                if ema:
-                    ema.update(model)
-                last_opt_step = ni
-
-            # Log
-            mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
-            mem = f"{torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0:.3g}G"  # (GB)
-            pbar.set_description(
-                ("%11s" * 2 + "%11.4g" * 5)
-                % (f"{epoch}/{epochs - 1}", mem, *mloss, targets.shape[0], (imgs[0] if isinstance(imgs, list) else imgs).shape[-1])
-            )
-            callbacks.run("on_train_batch_end", model, ni, imgs, targets, paths, list(mloss))
-            if callbacks.stop_training:
-                return
-            # end batch ------------------------------------------------------------------------------------------------
-
-        # Scheduler
-        lr = [x["lr"] for x in optimizer.param_groups]  # for loggers
-        scheduler.step()
-
-        # mAP
-        callbacks.run("on_train_epoch_end", epoch=epoch)
-        ema.update_attr(model, include=["yaml", "nc", "hyp", "names", "stride", "class_weights"])
-        final_epoch = (epoch + 1 == epochs) or stopper.possible_stop
-        if not noval or final_epoch:  # Calculate mAP
-            results, maps, _ = validate.run(
+    # end training -----------------------------------------------------------------------------------------------------
+    # LOGGER.info(f"\n{epoch - start_epoch + 1} epochs completed in {(time.time() - t0) / 3600:.3f} hours.")
+    
+    # Initialize variables that might not be set due to commented training loop
+    epoch = 0
+    mloss = torch.zeros(3, device=device)
+    lr = [0.01]  # default learning rate for logging
+    best_fitness = 0.0
+    fi = 0.0
+    
+    # Validation on trained weights
+    for f in [last, best]:
+        if f.exists():
+            strip_optimizer(f)  # strip optimizers
+            LOGGER.info(f"\nValidating {f}...")
+            results, _, _ = validate.run(
                 data_dict,
                 batch_size=batch_size * 2,
                 imgsz=imgsz,
-                half=amp,
-                model=ema.ema,
+                model=attempt_load(f, device).half(),
+                iou_thres=0.65 if is_coco else 0.60,  # best pycocotools at iou 0.65
                 single_cls=single_cls,
-                save_json=True,
                 dataloader=val_loader,
                 save_dir=save_dir,
-                plots=True,
+                save_json=True,
+                verbose=True,
+                plots=True,  # Enable plots for prediction results
                 callbacks=callbacks,
                 compute_loss=compute_loss,
-                epoch=epoch,
-            )
-
-        # Update best mAP
-        fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
-        stop = stopper(epoch=epoch, fitness=fi)  # early stop check
-        if fi > best_fitness:
-            best_fitness = fi
-        log_vals = list(mloss) + list(results) + lr
-        callbacks.run("on_fit_epoch_end", log_vals, epoch, best_fitness, fi)
-
-        # Save model
-        if (not nosave) or (final_epoch):  # if save
-            ckpt = {
-                "epoch": epoch,
-                "best_fitness": best_fitness,
-                "model": deepcopy(de_parallel(model)).half(),
-                "ema": deepcopy(ema.ema).half(),
-                "updates": ema.updates,
-                "optimizer": optimizer.state_dict(),
-                "opt": vars(opt),
-                "date": datetime.now().isoformat(),
-            }
-
-            # Save last, best and delete
-            torch.save(ckpt, last)
-            if best_fitness == fi:
-                torch.save(ckpt, best)
-            if opt.save_period > 0 and epoch % opt.save_period == 0:
-                torch.save(ckpt, w / f"epoch{epoch}.pt")
-            del ckpt
-            callbacks.run("on_model_save", last, epoch, final_epoch, best_fitness, fi)
-
-        # EarlyStopping
-        if stop:
-            break
-
-        # end epoch ----------------------------------------------------------------------------------------------------
-
-    # end training -----------------------------------------------------------------------------------------------------
-    LOGGER.info(f"\n{epoch - start_epoch + 1} epochs completed in {(time.time() - t0) / 3600:.3f} hours.")
-    for f in last, best:
-        if f.exists():
-            strip_optimizer(f)  # strip optimizers
-            if f is best:
-                LOGGER.info(f"\nValidating {f}...")
-                results, _, _ = validate.run(
-                    data_dict,
-                    batch_size=batch_size * 2,
-                    imgsz=imgsz,
-                    model=attempt_load(f, device).half(),
-                    iou_thres=0.65 if is_coco else 0.60,  # best pycocotools at iou 0.65
-                    single_cls=single_cls,
-                    dataloader=val_loader,
-                    save_dir=save_dir,
-                    save_json=True,
-                    verbose=True,
-                    plots=False,
-                    callbacks=callbacks,
-                    compute_loss=compute_loss,
-                )  # val best model with plots
-                if is_coco:
-                    callbacks.run("on_fit_epoch_end", list(mloss) + list(results) + lr, epoch, best_fitness, fi)
+            )  # val model with plots
+            
+            # Log results
+            LOGGER.info(f"Results for {f}: P={results[0]:.3f}, R={results[1]:.3f}, mAP@0.5={results[2]:.3f}, mAP@0.5:0.95={results[3]:.3f}")
+            
+            if is_coco:
+                callbacks.run("on_fit_epoch_end", list(mloss) + list(results) + lr, epoch, best_fitness, fi)
+        else:
+            LOGGER.warning(f"Weight file {f} not found!")
 
     callbacks.run("on_train_end", last, best, epoch, results)
 
@@ -545,7 +490,13 @@ def main(opt, callbacks=Callbacks()):
     assert len(opt.cfg) or len(opt.weights), "either --cfg or --weights must be specified"
     if opt.name == "cfg":
         opt.name = Path(opt.cfg).stem  # use model.yaml as name
-    opt.save_dir = str(increment_path(Path(opt.project) / opt.name, exist_ok=opt.exist_ok))
+    
+    # Handle case where user provides a direct path to trained model directory
+    if Path(opt.project).is_dir() and (Path(opt.project) / "weights").exists():
+        opt.save_dir = str(opt.project)
+        LOGGER.info(f"Using existing model directory: {opt.save_dir}")
+    else:
+        opt.save_dir = str(increment_path(Path(opt.project) / opt.name, exist_ok=opt.exist_ok))
 
     # Train
     device = select_device(opt.device, batch_size=opt.batch_size)

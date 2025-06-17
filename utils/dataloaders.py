@@ -802,16 +802,16 @@ class LoadImagesAndLabels(Dataset):
             if labels.size:  # normalized xywh to pixel xyxy format
                 labels[:, 1:] = xywhn2xyxy(labels[:, 1:], ratio[0] * w, ratio[1] * h, padw=pad[0], padh=pad[1])
 
-            if self.augment:
-                img, labels = random_perspective(
-                    img,
-                    labels,
-                    degrees=hyp["degrees"],
-                    translate=hyp["translate"],
-                    scale=hyp["scale"],
-                    shear=hyp["shear"],
-                    perspective=hyp["perspective"],
-                )
+            # if self.augment:
+            #     img, labels = random_perspective(
+            #         img,
+            #         labels,
+            #         degrees=hyp["degrees"],
+            #         translate=hyp["translate"],
+            #         scale=hyp["scale"],
+            #         shear=hyp["shear"],
+            #         perspective=hyp["perspective"],
+            #     )
 
         nl = len(labels)  # number of labels
         if nl:
@@ -1094,8 +1094,8 @@ class LoadRGBTImagesAndLabels(LoadImagesAndLabels):
 
         super().__init__(path, **kwargs)
 
-        # TODO: make mosaic augmentation work
-        self.mosaic = False
+        # Enable mosaic augmentation for RGB-T
+        # self.mosaic = True  # Inherited from parent class and can now be used
 
         # Set ignore flag
         cond = self.ignore_settings['train' if is_train else 'test']
@@ -1200,15 +1200,31 @@ class LoadRGBTImagesAndLabels(LoadImagesAndLabels):
         hyp = self.hyp
         mosaic = self.mosaic and random.random() < hyp["mosaic"]
         if mosaic:
-            raise NotImplementedError('Please make "mosaic" augmentation work!')
-
-            # TODO: Load mosaic
-            img, labels = self.load_mosaic(index)
+            # Load mosaic for both modalities
+            imgs, labels = self.load_mosaic(index)
             shapes = None
 
-            # TODO: MixUp augmentation
+            # MixUp augmentation for RGB-T
             if random.random() < hyp["mixup"]:
-                img, labels = mixup(img, labels, *self.load_mosaic(random.choice(self.indices)))
+                imgs2, labels2 = self.load_mosaic(random.choice(self.indices))
+                # Apply mixup to both modalities
+                imgs[0], labels = mixup(imgs[0], labels, imgs2[0], labels2)  # LWIR
+                imgs[1], _ = mixup(imgs[1], labels, imgs2[1], labels2)  # Visible (same labels)
+            
+            # Convert images to tensor format
+            for ii, img in enumerate(imgs):
+                img = img.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
+                img = np.ascontiguousarray(img)
+                imgs[ii] = torch.from_numpy(img)
+
+            # Process labels for mosaic
+            nl = len(labels)  # number of labels
+            if nl:
+                labels[:, 1:5] = xyxy2xywhn(labels[:, 1:5], w=imgs[0].shape[2], h=imgs[0].shape[1], clip=True, eps=1e-3)
+            
+            labels_out = torch.zeros((nl, 7))
+            if nl:
+                labels_out[:, 1:] = torch.from_numpy(labels)
 
         else:
             # Load image
@@ -1226,18 +1242,18 @@ class LoadRGBTImagesAndLabels(LoadImagesAndLabels):
                     labels[:, 1:3] += labels[:, 3:5] / 2.0      # (x_lefttop, y_lefttop) -> (x_center, y_center)
                     labels[:, 1:] = xywhn2xyxy(labels[:, 1:], ratio[0] * w, ratio[1] * h, padw=pad[0], padh=pad[1])
 
-                if self.augment:
-                    raise NotImplementedError('Please make data augmentation work!')
+                # if self.augment:
+                #     # raise NotImplementedError('Please make data augmentation work!')
 
-                    img, labels = random_perspective(
-                        img,
-                        labels,
-                        degrees=hyp["degrees"],
-                        translate=hyp["translate"],
-                        scale=hyp["scale"],
-                        shear=hyp["shear"],
-                        perspective=hyp["perspective"],
-                    )
+                #     img, labels = random_perspective(
+                #         img,
+                #         labels,
+                #         degrees=hyp["degrees"],
+                #         translate=hyp["translate"],
+                #         scale=hyp["scale"],
+                #         shear=hyp["shear"],
+                #         perspective=hyp["perspective"],
+                #     )
 
                 nl = len(labels)  # number of labels
                 if nl:
@@ -1315,6 +1331,63 @@ class LoadRGBTImagesAndLabels(LoadImagesAndLabels):
 
         return self.ims[i], self.im_hw0[i], self.im_hw[i]  # im, hw_original, hw_resized
 
+    def load_mosaic(self, index):
+        """Loads a 4-image mosaic for RGB-T YOLOv5, combining 1 selected and 3 random images for both modalities."""
+        labels4, segments4 = [], []
+        s = self.img_size
+        yc, xc = (int(random.uniform(-x, 2 * s + x)) for x in self.mosaic_border)  # mosaic center x, y
+        indices = [index] + random.choices(self.indices, k=3)  # 3 additional image indices
+        random.shuffle(indices)
+        
+        # Create empty mosaic images for both modalities
+        img4_lwir = np.full((s * 2, s * 2, 3), 114, dtype=np.uint8)  # base image with 4 tiles
+        img4_vis = np.full((s * 2, s * 2, 3), 114, dtype=np.uint8)   # base image with 4 tiles
+        
+        for i, index in enumerate(indices):
+            # Load images for both modalities
+            imgs, (h0s, w0s), hw_resized = self.load_image(index)
+            img_lwir, img_vis = imgs[0], imgs[1]
+            h, w = hw_resized[0][:2]  # Use first modality's dimensions (should be same for both)
+
+            # place img in img4
+            if i == 0:  # top left
+                x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc  # xmin, ymin, xmax, ymax (large image)
+                x1b, y1b, x2b, y2b = w - (x2a - x1a), h - (y2a - y1a), w, h  # xmin, ymin, xmax, ymax (small image)
+            elif i == 1:  # top right
+                x1a, y1a, x2a, y2a = xc, max(yc - h, 0), min(xc + w, s * 2), yc
+                x1b, y1b, x2b, y2b = 0, h - (y2a - y1a), min(w, x2a - x1a), h
+            elif i == 2:  # bottom left
+                x1a, y1a, x2a, y2a = max(xc - w, 0), yc, xc, min(s * 2, yc + h)
+                x1b, y1b, x2b, y2b = w - (x2a - x1a), 0, w, min(y2a - y1a, h)
+            elif i == 3:  # bottom right
+                x1a, y1a, x2a, y2a = xc, yc, min(xc + w, s * 2), min(s * 2, yc + h)
+                x1b, y1b, x2b, y2b = 0, 0, min(w, x2a - x1a), min(y2a - y1a, h)
+
+            # Place both modality images in their respective mosaics
+            img4_lwir[y1a:y2a, x1a:x2a] = img_lwir[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
+            img4_vis[y1a:y2a, x1a:x2a] = img_vis[y1b:y2b, x1b:x2b]    # img4[ymin:ymax, xmin:xmax]
+            padw = x1a - x1b
+            padh = y1a - y1b
+
+            # Labels - process once for both modalities (they share the same labels)
+            # Use the same label conversion method as in __getitem__
+            labels, segments = self.labels[index].copy(), self.segments[index].copy()
+            if labels.size:
+                # Convert from KAIST format (cls, x_lefttop, y_lefttop, width, height, occlusion) 
+                # to normalized center format using the same method as __getitem__
+                labels[:, 1:3] += labels[:, 3:5] / 2.0  # (x_lefttop, y_lefttop) -> (x_center, y_center)
+                # Convert normalized xywh to pixel xyxy format for mosaic processing
+                labels[:, 1:5] = xywhn2xyxy(labels[:, 1:5], w, h, padw, padh)
+                segments = [xyn2xy(x, w, h, padw, padh) for x in segments]
+            labels4.append(labels)
+            segments4.extend(segments)
+
+        # Concat/clip labels
+        labels4 = np.concatenate(labels4, 0)
+        for x in (labels4[:, 1:5], *segments4):  # Only clip the bbox coordinates, not occlusion
+            np.clip(x, 0, 2 * s, out=x)  # clip when using random_perspective()
+
+        return [img4_lwir, img4_vis], labels4
 
     @staticmethod
     def collate_fn(batch):
