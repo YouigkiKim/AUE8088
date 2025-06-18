@@ -20,6 +20,7 @@ val: # val files info (relative to 'path')  12,538 images
   - test-all-20.txt
   # - val-D_rm_background.txt
   # - val-D.txt
+
 test: # test files info (optional)
   - test-all-20.txt
 
