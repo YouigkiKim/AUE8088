@@ -14,13 +14,13 @@ train: # train files info (relative to 'path') 12,538 images
   # - train-all_bakground_01.txt      # TODO: Please separate this file into train/val
   # - train-all_background_01.txt
   # - train-D_rm_background.txt
-  - train-all-04.txt
+  # - train-all-04.txt
   # - train-D.txt
+  - test-all-20.txt
 val: # val files info (relative to 'path')  12,538 images
   - test-all-20.txt
   # - val-D_rm_background.txt
   # - val-D.txt
-
 test: # test files info (optional)
   - test-all-20.txt
 

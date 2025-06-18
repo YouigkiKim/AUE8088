@@ -260,7 +260,8 @@ crashlytics.properties
 crashlytics-build.properties
 fabric.properties
 
-
-# Custom gitignore
+**/*.txt
+**/*.png
+datasets/
 *.tar
 datasets/

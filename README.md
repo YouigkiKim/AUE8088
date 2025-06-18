@@ -117,6 +117,40 @@
     --rgbt \
     --single-cls
   ```
+- Command
+  ```bash
+  $ python train_simple.py \
+    --img 640 \
+    --batch-size 8 \
+    --epochs 40 \
+    --data data/kaist-rgbt.yaml \
+    --cfg models/yolov5n_kaist-rgbt.yaml \
+    --weights yolov5n.pt \
+    --workers 4 \
+    --name yolov5n-rgbt_aug_mosaic_mixup_mosaic_geom_continue \
+    --entity $WANDB_ENTITY \
+    --rgbt \
+    --single-cls \
+    --patience 5 \
+    --weights runs/train/yolov5n-rgbt_aug_mosaic_mixup_mosaic_geom4/weights/last.pt
+  ```
+
+- Test 
+  ```bash
+  $ python val_rgbt.py \
+  --save-dir val_rgbt/autoanchor_mosaic_40_best \
+  --weights runs/train/yolov5n-rgbt_aug_mosaic_mixup_mosaic_geom_continue/weights/best.pt \
+  --data kaist-rgbt_test.yaml \
+  --batch-size 32 \
+  --save-json
+  $ python val_rgbt.py \
+  --save-dir val_rgbt/autoanchor_mosaic_40_last \
+  --weights runs/train/yolov5n-rgbt_aug_mosaic_mixup_mosaic_geom_continue2/weights/best.pt \
+  --data kaist-rgbt_test.yaml \
+  --batch-size 32 \
+  --save-json
+
+
 
 ### Evaluation (eval.ai server)
 - On your labtop, go to the website: `http://166.104.168.170:8888/` (Open: 5/23)
